@@ -1,146 +1,98 @@
 const MongoClient = require("mongodb").MongoClient;
-const ObjectId = require("mongodb").ObjectID;
+require('dotenv').config()
+
 
 const MongoOption = {
-  // promiseLibrary: Promise,
   useUnifiedTopology: true,
 };
 
-const host = process.env.MONGO_URL ? process.env.MONGO_URL : "localhost:27017";
-const url = `mongodb://${host}`;
-
-let client = new MongoClient(url, MongoOption);
-
-async function initializeClient() {
-  await client.connect();
-  console.log("Initialized Connection to mongoDB at", host);
-  return true;
-}
-
-async function closeClient() {
-  await client.close();
-  console.log("Closing MongoDB Connection");
-}
-
-async function query(dbName, collectionName, criteria, sorting, limits, skips) {
-  let sort = sorting ? sorting : {};
-  let limit = limits ? limits : 100;
-  let skip = skips ? skips : 0;
-  console.debug(
-    `Running Query on ${collectionName}`,
-    `C-${JSON.stringify(criteria)}`,
-    `SO-${JSON.stringify(sort)}`,
-    `L-${JSON.stringify(limit)}`,
-    `SK-${JSON.stringify(skip)}`
-  );
-
-  try {
-    const dbo = client.db(dbName);
-
-    const result = await dbo
-      .collection(collectionName)
-      .find(criteria)
-      .sort(sort)
-      .limit(limit)
-      .skip(skip)
-      .toArray();
-    return result;
-  } catch (exception) {
-    console.error(exception);
-    return null;
-  }
-}
-
-async function insertOne(dbName, collectionName, newObject) {
-  try {
-    const dbo = client.db(dbName);
-    const result = await dbo.collection(collectionName).insertOne(newObject);
-    return result;
-  } catch (exception) {
-    console.error(exception);
-    return null;
-  }
-}
-
-async function insertMany(dbName, collectionName, newObjectArray) {
-  try {
-    const dbo = client.db(dbName);
-    const result = await dbo
-      .collection(collectionName)
-      .insertMany(newObjectArray);
-    return result;
-  } catch (exception) {
-    console.error(exception);
-    return null;
-  }
-}
-
-async function findOneAndUpdate(
-  dbName,
+async function replicate(
+  sourceUrl,
+  sourceDatabase,
+  targetUrl,
+  targetDatabase,
   collectionName,
-  condition,
-  updateObject
+  selectionCriteria
 ) {
-  try {
-    const dbo = client.db(dbName);
-    const result = await dbo
+  console.log("Replicate between database");
+
+  return new Promise(async function (resolve, reject) {
+    let sourceclient = initializeClient(sourceUrl, MongoOption);
+    let targetclient = initializeClient(targetUrl, MongoOption);
+
+    await Promise.all([sourceclient.connect(), targetclient.connect()]);
+    console.log("Clients Ready");
+    let sourceCursor = sourceclient
+      .db(sourceDatabase)
       .collection(collectionName)
-      .findOneAndUpdate(condition, updateObject, { upsert: true });
-    return result;
-  } catch (exception) {
-    console.error(exception);
-    throw exception;
-  }
-}
+      .find(selectionCriteria)
+      .stream();
 
-async function updateOne(dbName, collectionName, condition, updateObject) {
-  try {
-    const dbo = client.db(dbName);
-    const result = await dbo
-      .collection(collectionName)
-      .updateOne(condition, { $set: updateObject }, { upsert: true });
-    return result;
-  } catch (exception) {
-    console.error(exception);
-    throw exception;
-  }
-}
+    const ops = [];
+    sourceCursor.on("data", async (data) => {
+      console.log(`Processing Record ${data._id}`);
+      ops.push(
+        targetclient
+          .db(targetDatabase)
+          .collection(collectionName)
+          .insertOne(data)
+      );
+    });
 
-async function removeOne(dbName, collectionName, condition) {
-  try {
-    const dbo = client.db(dbName);
-    const result = await dbo.collection(collectionName).removeOne(condition);
-    return result;
-  } catch (exception) {
-    console.error(exception);
-    throw exception;
-  }
+    sourceCursor.on("end", async (data) => {
+      console.log("====================================================================================")
+      console.log(
+        "Replication is Completed from Source (",
+        sourceDatabase,
+        ") To (",
+        targetDatabase,
+        ") For",
+        collectionName,
+        "Matching criteria",
+        selectionCriteria
+      );
+      console.log("Keep the console open and wait for the documents to be committed in the new database");
+      console.log("====================================================================================")
+      Promise.all(ops).then(async () => {
+        await sourceclient.close();
+        await targetclient.close();
+        resolve({ status: "Completed" });
+      });
+    });
+  });
 }
-
-async function removeMany(dbName, collectionName, condition) {
-  try {
-    const dbo = client.db(dbName);
-    const result = await dbo.collection(collectionName).removeMany(condition);
-    return result;
-  } catch (exception) {
-    console.error(exception);
-    throw exception;
-  }
-}
-
-function getObjectIdFromString(id) {
-  return new ObjectId(id);
+function initializeClient(url, option) {
+  return new MongoClient(url, option)
 }
 
 module.exports = {
-  getClient: initializeClient,
-  closeClient,
-  query,
-  insertOne,
-  insertMany,
-  findOneAndUpdate,
-  updateOne,
-  removeOne,
-  removeMany,
-  getObjectIdFromString,
+  replicate,
 };
+
+
+
+// Mongo Altas woud need this 
+// url = `mongodb+srv://${USERNAME}:${PASSWORD}@${host}?retryWrites=true&w=majority`;/
+
+const sourceUrl = process.env.SOURCE_URL;
+const targetUrl = process.env.TARGET_URL;
+const sourceDatabase = process.env.SOURCE_DB_NAME;
+const targetDatabase = process.env.TARGET_DB_NAME;
+const collectionName = process.env.COLLECTION_TO_SYNC;
+
+if (sourceUrl && targetUrl && sourceDatabase && targetDatabase && collectionName) {
+  replicate(
+    sourceUrl,
+    sourceDatabase,
+    targetUrl,
+    targetDatabase,
+    collectionName
+  {}
+  ).then((results) => {
+    console.log(results);
+  });
+
+} else {
+  console.error("Missing Parameters for Replication")
+  process.exit(1);
+}
