@@ -1,0 +1,13 @@
+.vscode
+.idea/
+node_modules/
+
+download
+**/screenshot
+.DS_Store
+
+**/venv
+elasticsearch/
+
+experiments/downloads
+spider/downloads
